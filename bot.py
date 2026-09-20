@@ -318,12 +318,13 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_scr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if len(context.args) < 2:
-        await update.message.reply_text(
+        msg = (
             "🕷️ <b>Card Scraper</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
             "Use: <code>/scr [channel_link] [limit] [bin]</code>\n\n"
             "Example: <code>/scr https://t.me/channelname 100 4111</code>\n\n"
-            "📌 Max limit: 300000\n⏳ Cooldown: 5s",
-            parse_mode="HTML", reply_markup=main_menu_keyboard())
+            "📌 Max limit: 300000\n⏳ Cooldown: 5s"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML", reply_markup=main_menu_keyboard())
         return
 
     channel = context.args[0]
@@ -347,10 +348,20 @@ async def cmd_scr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_bin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("❌ INVALID USAGE\n━━━━━━━━━━━━━━━━━━━━\n\n📌 Usage: /bin <BIN>\n📌 Example: /bin 453201\n\n━━━━━━━━━━━━━━━━━━━━", parse_mode="HTML")
+        msg = (
+            "❌ INVALID USAGE\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📌 Usage: /bin <BIN>\n"
+            "📌 Example: /bin 453201\n\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML")
         return
     
-    status_msg = await update.message.reply_text(f"🔍 Looking up BIN: <code>{context.args[0][:6]}</code>...", parse_mode="HTML")
+    bin_arg = context.args[0][:6]
+    loading_msg = f"🔍 Looking up BIN: <code>{bin_arg}</code>..."
+    status_msg = await update.message.reply_text(loading_msg, parse_mode="HTML")
+    
     result = await lookup_bin(context.args[0])
     
     user_name = update.effective_user.first_name or "User"
@@ -358,7 +369,8 @@ async def cmd_bin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ud = context.bot_data.get("user_data", {}).get(uid, {})
     raw_plan = ud.get("plan", "TRIAL").upper()
     expires = ud.get("expires", 0)
-    if raw_plan != "TRIAL" and expires <= time.time(): raw_plan = "TRIAL"
+    if raw_plan != "TRIAL" and expires <= time.time(): 
+        raw_plan = "TRIAL"
     
     styled_plan_map = {"CORE": "Cᴏʀᴇ", "ELITE": "Eʟɪᴛᴇ", "ROOT": "Rᴏᴏᴛ"}
     styled_plan = styled_plan_map.get(raw_plan, "Tʀɪᴀʟ")
@@ -374,23 +386,25 @@ async def cmd_bin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not WHOP_LOADED:
-        await update.message.reply_text(
-            "❌ <b>MODULE NOT LOADED</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        msg = (
+            "❌ <b>MODULE NOT LOADED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
             "The <code>whop_checker.py</code> file failed to import.\n"
             "Please make sure you have installed requirements: <code>pip install requests</code>\n"
-            "And ensure <code>whop_checker.py</code> is in the same folder as <code>bot.py</code>.",
-            parse_mode="HTML"
+            "And ensure <code>whop_checker.py</code> is in the same folder as <code>bot.py</code>."
         )
+        await update.message.reply_text(msg, parse_mode="HTML")
         return
 
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ INVALID USAGE\n━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg = (
+            "❌ INVALID USAGE\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
             "📌 Usage: <code>/hit card|mm|yy|cvv whop_url</code>\n"
             "📌 Example: <code>/hit 4532015112830366|12|28|123 https://whop.com/...</code>\n\n"
-            "⚠️ Note: Runs a full simulated Whop checkout using the provided URL.",
-            parse_mode="HTML"
+            "⚠️ Note: Runs a full simulated Whop checkout using the provided URL."
         )
+        await update.message.reply_text(msg, parse_mode="HTML")
         return
 
     card_str = None
