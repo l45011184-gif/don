@@ -1031,7 +1031,10 @@ class WhopCheckout:
             timeout=15,
         )
         d = r.json() if r.text.strip() else {}
-        log.info(f"  total=${(d.get('total') or {}).get('amount','?')}")
+        total_data = d.get("total") or {}
+        self.cfg["amount"] = total_data.get("amount", "?")
+        self.cfg["currency"] = (total_data.get("currency") or "usd").upper()
+        log.info(f"  total={self.cfg['amount']} {self.cfg['currency']}")
         return d
 
     def s14_bt_key(self):
@@ -1799,7 +1802,8 @@ class WhopCheckout:
             out = ({"status":"error","message":"ProxyError: blocked (403)"}
                    if self._blocked else {"status":"error","message":str(e)})
         out["elapsed_ms"] = round((_t.time() - t0) * 1000)
-        out["email_used"] = self.cfg.get("email","")
+        out["amount"] = self.cfg.get("amount", "?")
+        out["currency"] = self.cfg.get("currency", "USD")
         return out
 
 CONFIG = {
