@@ -1,4 +1,15 @@
-import requests, json, time, uuid, re, base64, random, logging, hashlib
+import subprocess
+import sys
+
+# Auto-install requests if missing to prevent ImportError
+try:
+    import requests
+except ImportError:
+    print("Installing required package: requests...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+    import requests
+
+import json, time, uuid, re, base64, random, logging, hashlib
 from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
@@ -1834,134 +1845,3 @@ def _build_cfg(url, email, cc, proxy="", ua="", plan=""):
         "billing_name":"","billing_city":"","billing_line1":"",
         "billing_line2":"","billing_postal_code":"","billing_state":"",
     }
-
-if __name__ == "__main__":
-    import sys
-    from flask import Flask, request as freq, jsonify
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    app = Flask(__name__)
-
-    @app.route("/health")
-    def health():
-        return jsonify({"status":"ok","version":"6","port":5017})
-
-    @app.route("/gen-email")
-    def gen_email():
-        n = min(int(freq.args.get("n",1)), 100)
-        emails = [_gen_email() for _ in range(n)]
-        return jsonify({"emails":emails,"count":n} if n > 1 else {"email":emails[0]})
-
-    @app.route("/whop")
-    def endpoint():
-        url   = freq.args.get("url","")
-        cc    = freq.args.get("cc","")
-        email = freq.args.get("email","")
-        proxy = freq.args.get("proxy","")
-        ua    = freq.args.get("ua","")
-        plan  = freq.args.get("plan","")
-        phone    = freq.args.get("phone","")
-        discord  = freq.args.get("discord","")
-        twitter  = freq.args.get("twitter","")
-        instagram= freq.args.get("instagram","")
-        referral = freq.args.get("referral","")
-
-        if not url or not cc:
-            return jsonify({
-                "error": "Missing url or cc",
-                "usage": "/whop?url=URL&cc=NUMBER|MM|YY|CVC",
-                "example": "/whop?url=https://whop.com/co/prod/?a=aff&cc=4111111111111111|12|29|123",
-            }), 400
-
-        parsed, err = _parse_cc(cc)
-        if err:
-            return jsonify({"error": err}), 400
-
-        cfg = _build_cfg(url, email, parsed, proxy, ua, plan)
-        if phone:     cfg["phone"]         = phone
-        if discord:   cfg["discord"]       = discord
-        if twitter:   cfg["twitter"]       = twitter
-        if instagram: cfg["instagram"]     = instagram
-        if referral:  cfg["referral_code"] = referral
-
-        return jsonify(WhopCheckout(cfg).run_api())
-
-    @app.route("/whop/bulk", methods=["POST"])
-    def bulk():
-        body = freq.get_json(silent=True)
-        if body is None:
-            return jsonify({"error":"JSON body required"}), 400
-
-        checks  = body if isinstance(body, list) else body.get("checks",[])
-        threads = min(int(body.get("threads",10) if isinstance(body,dict) else 10), 50)
-
-        if not checks:
-            return jsonify({"error":"No checks provided"}), 400
-        if len(checks) > 200:
-            return jsonify({"error":"Max 200 checks per request"}), 400
-
-        import time as _t; t0 = _t.time()
-
-        def _run(item, idx):
-            cc_raw = item.get("cc","")
-            parsed, err = _parse_cc(cc_raw)
-            if err:
-                return {"index":idx,"cc":cc_raw,"status":"error","message":err}
-            try:
-                result = WhopCheckout(_build_cfg(
-                    item.get("url",""), item.get("email",""), parsed,
-                    item.get("proxy",""), item.get("ua",""), item.get("plan","")
-                )).run_api()
-                result["index"] = idx
-                result["cc"]    = f"****{parsed['num'][-4:]}|{parsed['mon']:02d}|{parsed['yr']}"
-                return result
-            except Exception as e:
-                return {"index":idx,"cc":cc_raw,"status":"error","message":str(e)}
-
-        results = [None] * len(checks)
-        with ThreadPoolExecutor(max_workers=threads) as pool:
-            futs = {pool.submit(_run, item, i): i for i, item in enumerate(checks)}
-            for fut in as_completed(futs):
-                idx = futs[fut]
-                try:
-                    results[idx] = fut.result()
-                except Exception as e:
-                    results[idx] = {"index":idx,"status":"error","message":str(e)}
-
-        summary = {"charged":0,"declined":0,"3ds":0,"error":0,"other":0}
-        for r in results:
-            s = (r or {}).get("status","other")
-            summary[s if s in summary else "other"] += 1
-
-        return jsonify({
-            "total":      len(checks),
-            "threads":    threads,
-            "elapsed_ms": round((_t.time()-t0)*1000),
-            "summary":    summary,
-            "results":    results,
-        })
-
-    if len(sys.argv) > 1 and sys.argv[1] == "cli":
-        print("="*60); print("  WHOP CHECKOUT v6 -- CLI"); print("="*60)
-        url = input("  URL  : ").strip()
-        em  = input("  Email: ").strip()
-        num = input("  Card : ").strip().replace(" ","").replace("-","")
-        exp = input("  Exp  : ").strip()
-        cvc = input("  CVC  : ").strip()
-        prx = input("  Proxy: ").strip()
-        mon, yr = int(exp.split("/")[0]), int(exp.split("/")[1])
-        if yr < 100: yr += 2000
-        CONFIG.update({"product_url":url,"email":em,"card_number":num,
-                       "card_exp_month":mon,"card_exp_year":yr,"card_cvc":cvc,"proxy":prx})
-        WhopCheckout(CONFIG).run()
-    else:
-        PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 5017
-        print("="*60)
-        print(f"  WHOP CHECKOUT API v6")
-        print(f"  http://0.0.0.0:{PORT}/whop")
-        print(f"  http://0.0.0.0:{PORT}/whop/bulk  (POST JSON batch)")
-        print(f"  http://0.0.0.0:{PORT}/health")
-        print(f"  http://0.0.0.0:{PORT}/gen-email")
-        print(f"  Multi-threaded: YES (Flask threaded=True)")
-        print("="*60)
-        app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
