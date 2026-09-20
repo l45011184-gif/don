@@ -20,16 +20,18 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-# Import the Whop Checker you created in the separate file
-from whop_checker import WhopCheckout, _parse_cc, _build_cfg
+# Safe import: If whop_checker fails to import (e.g. missing requests), bot still runs
+try:
+    from whop_checker import WhopCheckout, _parse_cc, _build_cfg
+    WHOP_LOADED = True
+except Exception as e:
+    print(f"CRITICAL ERROR: Failed to import 'whop_checker.py': {e}")
+    WHOP_LOADED = False
 
 # ═══════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8983900075:AAGlMV8ldf6xUdrh8ktGkKK_c9_z2AMmJ2c")
-
-# Updated Secret Group/Channel ID
-# Link: https://t.me/+K2HxbF-zza9mYTJh
 SECRET_GROUP_ID = -1008892454769  
 
 logging.basicConfig(
@@ -83,7 +85,6 @@ def get_file_size(cards: List[str]) -> str:
         return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 def luhn_check(card_num: str) -> bool:
-    """Validates a credit card number using the Luhn algorithm."""
     total = 0
     reverse_digits = card_num[::-1]
     for i, d in enumerate(reverse_digits):
@@ -96,7 +97,7 @@ def luhn_check(card_num: str) -> bool:
     return total % 10 == 0
 
 # ═══════════════════════════════════════════════════════
-# BIN LOOKUP LOGIC (From bin.py)
+# BIN LOOKUP LOGIC
 # ═══════════════════════════════════════════════════════
 COUNTRY_CURRENCY = {
     "US": "USD", "GB": "GBP", "EU": "EUR", "FR": "EUR", "DE": "EUR",
@@ -201,7 +202,7 @@ _fwd_buf: Dict[int, dict] = {}
 _user_state: Dict[int, str] = {}
 
 # ═══════════════════════════════════════════════════════
-# KEYBOARDS — Matching the image layout
+# KEYBOARDS
 # ═══════════════════════════════════════════════════════
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -351,7 +352,17 @@ async def cmd_bin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
+    if not WHOP_LOADED:
+        await update.message.reply_text(
+            "❌ <b>MODULE NOT LOADED</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+            "The <code>whop_checker.py</code> file failed to import.\n"
+            "Please make sure you have installed requirements: <code>pip install requests</code>\n"
+            "And ensure <code>whop_checker.py</code> is in the same folder as <code>bot.py</code>.",
+            parse_mode="HTML"
+        )
+        return
+
+    if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "❌ INVALID USAGE\n━━━━━━━━━━━━━━━━━━━━\n\n"
             "📌 Usage: <code>/hit card|mm|yy|cvv whop_url</code>\n"
@@ -364,7 +375,6 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     card_str = None
     url_str = None
 
-    # Find which argument is the card and which is the URL
     for arg in context.args:
         if "|" in arg and not arg.startswith("http"):
             card_str = arg
@@ -387,17 +397,15 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ Processing Whop checkout, please wait...", parse_mode="HTML")
+    status_msg = await update.message.reply_text("⏳ Processing Whop checkout... This can take 15-20 seconds, please wait.", parse_mode="HTML")
 
     parsed, err = _parse_cc(card_str)
     if err:
         await status_msg.edit_text(f"❌ Error parsing card: {err}")
         return
 
-    # Build config (email will be auto-generated inside WhopCheckout if empty)
     cfg = _build_cfg(url_str, "", parsed)
 
-    # Run the blocking requests in an executor so it doesn't freeze the bot
     loop = asyncio.get_running_loop()
     
     def run_checker():
@@ -406,7 +414,8 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         result = await loop.run_in_executor(None, run_checker)
     except Exception as e:
-        await status_msg.edit_text(f"❌ Checker failed: {str(e)}")
+        logger.error(f"Whop checker crashed: {e}")
+        await status_msg.edit_text(f"❌ Checker crashed: {str(e)}")
         return
 
     st = result.get("status", "unknown")
@@ -498,7 +507,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data
     uid = query.from_user.id
 
-    # ─── BACK ───
     if data == "btn_back":
         _user_state.pop(uid, None)
         await query.message.edit_text(
@@ -506,7 +514,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=main_menu_keyboard())
         return
 
-    # ─── SCRAPE ───
     elif data == "btn_scrape":
         _user_state.pop(uid, None)
         await query.message.edit_text(
@@ -520,7 +527,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # ─── CLEAN ───
     elif data == "btn_clean":
         _user_state.pop(uid, None)
         cards = _store.get(uid, [])
@@ -546,7 +552,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=main_menu_keyboard())
         return
 
-    # ─── LIVE CHECK ───
     elif data == "btn_live":
         cards = _store.get(uid, [])
         if not cards:
@@ -567,7 +572,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # ─── COUNTRY ───
     elif data == "btn_country":
         cards = _store.get(uid, [])
         if not cards:
@@ -591,7 +595,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # ─── SPLIT ─── 
     elif data == "btn_split":
         cards = _store.get(uid, [])
         if not cards:
@@ -610,7 +613,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # ─── DEDUP ───
     elif data == "btn_dedup":
         _user_state.pop(uid, None)
         cards = _store.get(uid, [])
@@ -647,7 +649,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=main_menu_keyboard())
         return
 
-    # ─── ADD FILE ───
     elif data == "btn_addfile":
         _user_state.pop(uid, None)
         _merge_buffer[uid] = []
@@ -660,7 +661,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # ─── MERGE ───
     elif data == "btn_merge":
         _user_state.pop(uid, None)
         if uid not in _merge_buffer or not _merge_buffer[uid]:
@@ -691,7 +691,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=main_menu_keyboard())
         return
 
-    # ─── FIND BIN ───
     elif data == "btn_findbin":
         cards = _store.get(uid, [])
         if not cards:
@@ -710,7 +709,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML", reply_markup=back_keyboard())
         return
 
-    # ─── SETTINGS ───
     elif data == "btn_settings":
         _user_state.pop(uid, None)
         cards = _store.get(uid, [])
@@ -1000,7 +998,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     state = _user_state.get(uid)
 
-    # Route to state handler if active
     if state == "typing_bin":
         _user_state.pop(uid, None)
         await received_bin(update, context)
@@ -1018,7 +1015,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await received_country(update, context)
         return
 
-    # Merge buffer mode
     if uid in _merge_buffer:
         cards = extract_cards(text)
         if cards:
@@ -1030,7 +1026,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text("❌ No cards found in this text.")
         return
 
-    # Normal text — extract cards
     cards = extract_cards(text)
     if not cards:
         await update.message.reply_text(
@@ -1087,19 +1082,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def main() -> None:
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("bin", cmd_bin))
-    app.add_handler(CommandHandler("hit", cmd_hit))   # <--- /hit COMMAND CONFIGURED
+    app.add_handler(CommandHandler("hit", cmd_hit))   
     app.add_handler(CommandHandler("scr", cmd_scr))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
 
-    # Button callbacks
     app.add_handler(CallbackQueryHandler(button_callback, pattern="^btn_"))
 
-    # Message handlers
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.FORWARDED & (filters.TEXT | filters.CAPTION), handle_forwarded))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.FORWARDED, handle_text))
