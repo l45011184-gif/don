@@ -1,4 +1,5 @@
-from flask import Flask, jsonify, request
+import os
+from flask import Flask, jsonify
 
 app = Flask(__name__)
 
@@ -285,15 +286,10 @@ MOCK_CHECKOUT_RESPONSE = {
 def checkout_api():
     """
     API Endpoint that returns the mock checkout response.
-    You can use GET or POST to access this.
     """
-    # If you want to read cookies sent by the client (like auth_token), you can do so here:
-    # auth_token = request.cookies.get('auth_token')
-    
-    # Return the JSON response
     return jsonify(MOCK_CHECKOUT_RESPONSE)
 
 if __name__ == '__main__':
-    # Run the API on port 5000
-    print("Mock Checkout API running on http://0.0.0.0:5000/api/checkout")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Get the port from the environment variable (required for hosting platforms)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
